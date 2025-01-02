@@ -24,7 +24,7 @@ use kona_executor::TrieDBProvider;
 use kona_preimage::{CommsClient, PreimageKey, PreimageKeyType};
 use kona_proof::errors::OracleProviderError;
 use kona_proof::executor::KonaExecutor;
-use kona_proof::l1::{OracleL1ChainProvider, OraclePipeline};
+use kona_proof::l1::OracleL1ChainProvider;
 use kona_proof::l2::OracleL2ChainProvider;
 use kona_proof::sync::new_pipeline_cursor;
 use kona_proof::{BootInfo, FlushableCache, HintType};
@@ -32,6 +32,11 @@ use op_alloy_genesis::RollupConfig;
 use risc0_zkvm::sha::{Impl as SHA2, Sha256};
 use std::fmt::Debug;
 use std::sync::Arc;
+
+#[cfg(feature = "eigenda")]
+use hokulea_proof::{eigenda_provider::OracleEigenDAProvider, pipeline::OraclePipeline};
+#[cfg(not(feature = "eigenda"))]
+use kona_proof::l1::OraclePipeline;
 
 pub fn run_client<
     O: CommsClient + FlushableCache + Send + Sync + Debug,
@@ -66,6 +71,8 @@ where
 
         let mut l1_provider = OracleL1ChainProvider::new(boot.clone(), oracle.clone());
         let mut l2_provider = OracleL2ChainProvider::new(boot.clone(), oracle.clone());
+        #[cfg(feature = "eigenda")]
+        let eigenda_blob_provider = OracleEigenDAProvider::new(oracle.clone());
 
         // If the claimed L2 block number is less than the safe head of the L2 chain, the claim is
         // invalid.
@@ -88,6 +95,17 @@ where
         let cursor =
             new_pipeline_cursor(&boot, safe_head, &mut l1_provider, &mut l2_provider).await?;
         let cfg = Arc::new(boot.rollup_config.clone());
+        #[cfg(feature = "eigenda")]
+        let pipeline = OraclePipeline::new(
+            cfg.clone(),
+            cursor.clone(),
+            oracle.clone(),
+            beacon,
+            l1_provider.clone(),
+            l2_provider.clone(),
+            eigenda_blob_provider,
+        );
+        #[cfg(not(feature = "eigenda"))]
         let pipeline = OraclePipeline::new(
             cfg.clone(),
             cursor.clone(),
