@@ -14,9 +14,11 @@
 
 use crate::blobs::BlobWitnessData;
 use crate::boot::StitchedBootInfo;
+use crate::driver::CachedDriver;
 use crate::executor::Execution;
 use crate::oracle::vec::VecOracle;
 use crate::oracle::WitnessOracle;
+use crate::precondition::Precondition;
 use crate::rkyv::primitives::{AddressDef, B256Def};
 use alloy_primitives::{Address, B256};
 use std::fmt::Debug;
@@ -47,6 +49,12 @@ pub struct Witness<O: WitnessOracle> {
     /// # Notes:
     /// - Ensure all `Execution` objects within the groups are properly sorted.
     pub stitched_executions: Vec<Vec<Execution>>,
+    /// An initial state for the derivation pipeline
+    pub derivation_cache: Option<CachedDriver>,
+    /// Whether to record a derivation trace precondition in the output journal
+    pub trace_derivation: bool,
+    /// A list of `StitchedBootInfo` instances to be stitched together from other proofs.
+    pub stitched_preconditions: Vec<Precondition>,
     /// A list of `StitchedBootInfo` instances to be stitched together from other proofs.
     pub stitched_boot_info: Vec<StitchedBootInfo>,
     /// Represents the fault-proof virtual machine program image id.
@@ -96,6 +104,12 @@ pub mod tests {
                 .into_iter()
                 .map(|e| e.deref().clone())
                 .collect()],
+            derivation_cache: None,
+            trace_derivation: false,
+            stitched_preconditions: vec![
+                Precondition::default().proposal(keccak256(b"proposal"));
+                32
+            ],
             stitched_boot_info: gen_boot_infos(32, 128),
             fpvm_image_id: keccak256(b"fpvm_image_id"),
         };

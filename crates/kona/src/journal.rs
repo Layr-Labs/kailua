@@ -26,9 +26,9 @@ pub struct ProofJournal {
     /// The hash of the precondition for validating this proof.
     ///
     /// The value represents exactly one of the following cases:
-    /// - Validity proving: Equal to [crate::precondition::PreconditionValidationData::precondition_hash].
+    /// - Validity proving: Equal to [crate::precondition::proposal::ProposalPrecondition::precondition_hash].
     /// - Fault proving: Equal to [B256::ZERO].
-    /// - Execution proving: Equal to [crate::executor::exec_precondition_hash].
+    /// - Execution proving: Equal to [crate::precondition::execution::exec_precondition_hash].
     pub precondition_hash: B256,
     /// The L1 head hash containing the safe L2 chain data that may reproduce the L2 head hash.
     pub l1_head: B256,
@@ -49,18 +49,18 @@ impl ProofJournal {
     pub fn new(
         fpvm_image_id: B256,
         payout_recipient: Address,
-        precondition_output: B256,
+        precondition_hash: B256,
         boot_info: &BootInfo,
     ) -> Self {
         Self {
             fpvm_image_id,
             payout_recipient,
-            precondition_hash: precondition_output,
+            precondition_hash,
             l1_head: boot_info.l1_head,
             agreed_l2_output_root: boot_info.agreed_l2_output_root,
             claimed_l2_output_root: boot_info.claimed_l2_output_root,
             claimed_l2_block_number: boot_info.claimed_l2_block_number,
-            config_hash: B256::from(crate::config::config_hash(&boot_info.rollup_config).unwrap()),
+            config_hash: B256::from(crate::config::config_hash(&boot_info.rollup_config)),
         }
     }
 
@@ -68,14 +68,14 @@ impl ProofJournal {
     pub fn new_stitched(
         fpvm_image_id: B256,
         payout_recipient: Address,
-        precondition_output: B256,
+        precondition_hash: B256,
         config_hash: B256,
         stitched_boot_info: &StitchedBootInfo,
     ) -> Self {
         Self {
             fpvm_image_id,
             payout_recipient,
-            precondition_hash: precondition_output,
+            precondition_hash,
             l1_head: stitched_boot_info.l1_head,
             agreed_l2_output_root: stitched_boot_info.agreed_l2_output_root,
             claimed_l2_output_root: stitched_boot_info.claimed_l2_output_root,
@@ -231,8 +231,9 @@ pub mod tests {
 
     #[test]
     fn test_proof_journal_constructor() {
-        let config_hash =
-            B256::from(crate::config::config_hash(&kona_genesis::RollupConfig::default()).unwrap());
+        let config_hash = B256::from(crate::config::config_hash(
+            &kona_genesis::RollupConfig::default(),
+        ));
         let proof_journals = gen_proof_journals(512, 64, config_hash);
         // Test constructor
         for journal in proof_journals {

@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.0.3"
+version = "1.1.0"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.86"
@@ -132,7 +132,7 @@ risc0-ethereum-contracts = "3.0.1"
 risc0-zkvm = { version = "3.0.3", features = ["heap-embedded-alloc", "unstable"] }
 
 # Boundless
-boundless-market = "0.14.0"
+boundless-market = "1.0.0"
 
 # STEEL
 risc0-steel = { git = "https://github.com/boundless-xyz/steel.git", tag = "v2.4.0" }
@@ -150,5 +150,20 @@ overflow-checks = true
 codegen-units = 1
 opt-level = 3
 
-[patch.crates-io]
-boundless-market = { git = "https://github.com/boundless-xyz/boundless", branch = "revert-alloy-1.0" }
+[patch."https://github.com/op-rs/kona"]
+kona-cli = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-client = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-derive = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-driver = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-executor = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-genesis = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-host = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-interop = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-mpt = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-preimage = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-proof = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-protocol = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-providers-alloy = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-registry = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-std-fpvm = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }
+kona-std-fpvm-proc = { git = "https://github.com/boundless-xyz/kona", branch = "derive" }

@@ -22,7 +22,9 @@ use alloy::providers::{Provider, RootProvider};
 use alloy_primitives::B256;
 use anyhow::{anyhow, bail, Context};
 use kailua_kona::blobs::BlobFetchRequest;
-use kailua_kona::precondition::PreconditionValidationData;
+use kailua_kona::journal::ProofJournal;
+use kailua_kona::precondition::proposal::ProposalPrecondition;
+use kailua_kona::precondition::Precondition;
 use kailua_sync::provider::optimism::OpNodeProvider;
 use kailua_sync::{await_tel, retry_res_ctx_timeout};
 use kona_genesis::RollupConfig;
@@ -88,7 +90,7 @@ pub async fn get_blob_fetch_request(
 
 pub async fn fetch_precondition_data(
     cfg: &ProveArgs,
-) -> anyhow::Result<Option<PreconditionValidationData>> {
+) -> anyhow::Result<Option<ProposalPrecondition>> {
     // Determine precondition hash
     let hash_arguments = [
         cfg.precondition_params.is_empty(),
@@ -117,7 +119,7 @@ pub async fn fetch_precondition_data(
                 fetch_requests
                     .push(get_blob_fetch_request(&providers.l1, *block_hash, *blob_hash).await?);
             }
-            PreconditionValidationData::Validity {
+            ProposalPrecondition {
                 proposal_l2_head_number: cfg.precondition_params[0],
                 proposal_output_count: cfg.precondition_params[1],
                 output_block_span: cfg.precondition_params[2],
@@ -151,7 +153,7 @@ pub async fn concurrent_execution_preflight(
     rollup_config: RollupConfig,
     op_node_provider: &OpNodeProvider,
     disk_kv_store: Option<RWLKeyValueStore>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let tracer = tracer("kailua");
     let context =
         opentelemetry::Context::current_with_span(tracer.start("concurrent_execution_preflight"));
@@ -174,7 +176,7 @@ pub async fn concurrent_execution_preflight(
 
     let mut num_blocks = args.kona.claimed_l2_block_number - starting_block;
     if num_blocks == 0 {
-        return Ok(());
+        return Ok(true);
     }
     let blocks_per_thread = num_blocks / args.proving.num_concurrent_preflights;
     let mut extra_blocks = num_blocks % args.proving.num_concurrent_preflights;
@@ -203,24 +205,34 @@ pub async fn concurrent_execution_preflight(
         .header
         .number
             + processed_blocks;
-        args.kona.claimed_l2_output_root = op_node_provider
-            .output_at_block(args.kona.claimed_l2_block_number)
-            .await?;
+        args.kona.claimed_l2_output_root = await_tel!(
+            context,
+            tracer,
+            "output_at_block claimed_l2_block_number",
+            retry_res_ctx_timeout!(
+                op_node_provider
+                    .output_at_block(args.kona.claimed_l2_block_number)
+                    .await
+            )
+        );
         // queue and start new job
-        jobs.push(tokio::spawn(crate::tasks::compute_cached_proof(
+        let task = tokio::spawn(crate::tasks::compute_cached_proof(
             args.clone(),
             rollup_config.clone(),
             disk_kv_store.clone(),
+            Precondition::default(),
             B256::ZERO,
-            B256::ZERO,
+            vec![],
+            None,
+            None,
             vec![],
             vec![],
             vec![],
             false,
             true,
             false,
-        )));
-        // jobs.push(args.clone());
+        ));
+        jobs.push((args.kona.claimed_l2_block_number, task));
         // update starting block for next job
         if num_blocks > 0 {
             args.kona.agreed_l2_head_hash = await_tel!(
@@ -242,14 +254,27 @@ pub async fn concurrent_execution_preflight(
         }
     }
     // Await all tasks
-    for job in jobs {
+    let mut l1_head_sufficient = true;
+    for (target_l2_height, job) in jobs {
         let result = job.await?;
-        if let Err(e) = result {
-            if !matches!(e, ProvingError::NotSeekingProof(..)) {
-                error!("Error during preflight execution: {e:?}");
+        match result {
+            Err(e) => {
+                if !matches!(e, ProvingError::NotSeekingProof(..)) {
+                    error!("Error during preflight execution: {e:?}");
+                }
+            }
+            Ok((receipt, _)) => {
+                let ProofJournal {
+                    claimed_l2_block_number,
+                    ..
+                } = ProofJournal::from(&receipt);
+                if claimed_l2_block_number < target_l2_height {
+                    error!("L1 Head insufficient to derive L2 block {target_l2_height}. Stopped at {claimed_l2_block_number}.");
+                    l1_head_sufficient = false;
+                }
             }
         }
     }
 
-    Ok(())
+    Ok(l1_head_sufficient)
 }

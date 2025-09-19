@@ -23,7 +23,7 @@ use anyhow::{bail, Context};
 use kailua_kona::blobs::BlobFetchRequest;
 use kailua_kona::config::config_hash;
 use kailua_kona::journal::ProofJournal;
-use kailua_kona::precondition::PreconditionValidationData;
+use kailua_kona::precondition::proposal::ProposalPrecondition;
 use kailua_prover::args::{ProveArgs, ProvingArgs};
 use kailua_prover::channel::AsyncChannel;
 use kailua_prover::proof::proof_file_name;
@@ -60,7 +60,7 @@ pub async fn handle_proof_requests(
         )
     )
     .context("fetch_rollup_config")?;
-    let config_hash = B256::from(config_hash(&rollup_config)?);
+    let config_hash = B256::from(config_hash(&rollup_config));
     let raw_image_id = args.proving.image_id();
     let fpvm_image_id = B256::from(bytemuck::cast::<[u32; 8], [u8; 32]>(raw_image_id));
     // Set payout recipient
@@ -131,7 +131,7 @@ pub async fn handle_proof_requests(
                         .iter()
                         .map(|r| (r.block_ref.hash, r.blob_hash.hash))
                         .unzip();
-                    let PreconditionValidationData::Validity {
+                    let ProposalPrecondition {
                         proposal_l2_head_number,
                         proposal_output_count,
                         output_block_span,
@@ -300,7 +300,7 @@ pub async fn request_validity_proof(
             })
         }
         debug_assert!(!validated_blobs.is_empty());
-        Some(PreconditionValidationData::Validity {
+        Some(ProposalPrecondition {
             proposal_l2_head_number: parent.output_block_number,
             proposal_output_count: agent.deployment.proposal_output_count,
             output_block_span: agent.deployment.output_block_span,

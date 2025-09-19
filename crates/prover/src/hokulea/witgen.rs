@@ -1,17 +1,20 @@
 use crate::client::witgen;
 use alloy_primitives::{Address, B256};
 use kailua_kona::boot::StitchedBootInfo;
+use kailua_kona::driver::CachedDriver;
 use kailua_kona::executor::Execution;
 use kailua_kona::journal::ProofJournal;
 use kailua_kona::oracle::WitnessOracle;
+use kailua_kona::precondition::Precondition;
 use kailua_kona::witness::Witness;
 use kona_derive::prelude::BlobProvider;
 use kona_preimage::CommsClient;
-use kona_proof::FlushableCache;
+use kona_proof::{BootInfo, FlushableCache};
 use std::fmt::Debug;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_hokulea_witgen_client<P, B, O>(
     preimage_oracle: Arc<P>,
     preimage_oracle_shard_size: usize,
@@ -19,9 +22,15 @@ pub async fn run_hokulea_witgen_client<P, B, O>(
     payout_recipient: Address,
     precondition_validation_data_hash: B256,
     execution_cache: Vec<Arc<Execution>>,
+    derivation_cache: Option<CachedDriver>,
+    trace_derivation: bool,
+    stitched_preconditions: Vec<Precondition>,
     stitched_boot_info: Vec<StitchedBootInfo>,
 ) -> anyhow::Result<(
+    BootInfo,
     ProofJournal,
+    Precondition,
+    Option<CachedDriver>,
     Witness<O>,
     hokulea_proof::eigenda_blob_witness::EigenDABlobWitnessData,
 )>
@@ -43,7 +52,10 @@ where
         },
     );
     // Run regular witgen client
-    let (boot, mut proof_journal, mut witness) = witgen::run_witgen_client(
+    let (boot, proof_journal, precondition, cached_driver, witness) = witgen::run_witgen_client(
+        B256::from(bytemuck::cast::<_, [u8; 32]>(
+            kailua_build::KAILUA_FPVM_HOKULEA_ID,
+        )),
         preimage_oracle,
         preimage_oracle_shard_size,
         blob_provider,
@@ -51,6 +63,9 @@ where
         payout_recipient,
         precondition_validation_data_hash,
         execution_cache,
+        derivation_cache,
+        trace_derivation,
+        stitched_preconditions,
         stitched_boot_info,
     )
     .await?;
@@ -63,10 +78,13 @@ where
     for (_, recency) in &mut eigen_witness.recency {
         *recency = boot.rollup_config.seq_window_size;
     }
-    proof_journal.fpvm_image_id = B256::from(bytemuck::cast::<_, [u8; 32]>(
-        kailua_build::KAILUA_FPVM_HOKULEA_ID,
-    ));
-    witness.fpvm_image_id = proof_journal.fpvm_image_id;
     // Return extended result
-    Ok((proof_journal, witness, eigen_witness))
+    Ok((
+        boot,
+        proof_journal,
+        precondition,
+        cached_driver,
+        witness,
+        eigen_witness,
+    ))
 }

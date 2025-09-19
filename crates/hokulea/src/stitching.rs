@@ -21,8 +21,10 @@ use hokulea_proof::eigenda_blob_witness::EigenDABlobWitnessData;
 use hokulea_proof::preloaded_eigenda_provider::PreloadedEigenDABlobProvider;
 use kailua_kona::boot::StitchedBootInfo;
 use kailua_kona::client::stitching::{KonaStitchingClient, StitchingClient};
+use kailua_kona::driver::CachedDriver;
 use kailua_kona::executor::Execution;
 use kailua_kona::journal::ProofJournal;
+use kailua_kona::precondition::Precondition;
 use kona_derive::prelude::BlobProvider;
 use kona_preimage::CommsClient;
 use kona_proof::boot::BootInfo;
@@ -59,8 +61,11 @@ impl<
         fpvm_image_id: B256,
         payout_recipient_address: Address,
         stitched_executions: Vec<Vec<Execution>>,
+        derivation_cache: Option<CachedDriver>,
+        derivation_trace: bool,
+        stitched_preconditions: Vec<Precondition>,
         stitched_boot_info: Vec<StitchedBootInfo>,
-    ) -> (BootInfo, ProofJournal)
+    ) -> (BootInfo, ProofJournal, Precondition)
     where
         <B as BlobProvider>::Error: Debug,
     {
@@ -71,8 +76,8 @@ impl<
             KailuaCanoeVerifier(self.canoe_image_id.0),
         );
 
-        let (boot, proof_journal) = KonaStitchingClient(EigenDADataSourceProvider(eigen_da))
-            .run_stitching_client(
+        let (boot, proof_journal, precondition) =
+            KonaStitchingClient(EigenDADataSourceProvider(eigen_da)).run_stitching_client(
                 precondition_validation_data_hash,
                 oracle,
                 stream,
@@ -80,11 +85,14 @@ impl<
                 fpvm_image_id,
                 payout_recipient_address,
                 stitched_executions,
+                derivation_cache,
+                derivation_trace,
+                stitched_preconditions,
                 stitched_boot_info,
             );
 
         da_witness_postcondition(eigen_da_precondition, &boot);
 
-        (boot, proof_journal)
+        (boot, proof_journal, precondition)
     }
 }
