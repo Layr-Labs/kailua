@@ -590,7 +590,7 @@ CONTROL_ID: 0x04446E66D300EB7FB45C9726BB53C793DDA407A62E9601618BB43C5C14657AC0
 RISC_ZERO_VERIFIER: 0x8EAB2D97DFCE405A1692A21B3FF3A172D593D319
 GENESIS_TIMESTAMP: 1686789347
 BLOCK_TIME: 2
-ROLLUP_CONFIG_HASH: 0x189C80BF708F54392730B852EEC1C5428DA75853FED5304D6F58E1442E1A4772
+ROLLUP_CONFIG_HASH: 0x6A4B3209AFD526E046BA1B33A40DB9EAEDF6F4D27167E61D0A12A17DE0E712F2
 DISPUTE_GAME_FACTORY: 0x43EDB88C4B80FDD2ADFF2412A7BEBF9DF42CB40E
 OPTIMISM_PORTAL: 0x49048044D57E1C92A77F79988D21FA8FAF74E97E
 KAILUA_GAME_TYPE: 1337
@@ -1880,6 +1880,7 @@ This allows it to restart quickly.</p>
 <li><code>num-concurrent-r0vm</code>: How many threads to use for zkvm executors per prover.</li>
 <li><code>segment-limit</code>: ZKVM Proving Segment Limit (Default 21).</li>
 <li><code>max-witness-size</code>: Maximum input data byte size per single proof (Default 2.5 GB).</li>
+<li><code>max-proof-stitches</code>: Maximum number of derivation proofs to aggregate per stitching proof.</li>
 <li><code>max-block-derivations</code>: Maximum number of blocks to derive per single proof.</li>
 <li><code>max-block-executions</code>: Maximum number of blocks to execute per single proof.</li>
 <li><code>num-tail-blocks</code>: Rate of growth of tail proofs in L1 blocks (Default 10).</li>
