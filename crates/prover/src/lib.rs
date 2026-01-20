@@ -16,6 +16,7 @@ use alloy_primitives::B256;
 use async_channel::Sender;
 use kailua_kona::driver::CachedDriver;
 use kailua_kona::executor::Execution;
+use std::time::SystemTime;
 
 pub mod args;
 pub mod channel;
@@ -28,6 +29,7 @@ pub mod hana;
 pub mod hokulea;
 pub mod kv;
 pub mod preflight;
+pub mod profiling;
 pub mod proof;
 pub mod prove;
 pub mod risczero;
@@ -119,4 +121,11 @@ impl ProvingError {
             err => err,
         }
     }
+}
+
+pub fn current_time() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }

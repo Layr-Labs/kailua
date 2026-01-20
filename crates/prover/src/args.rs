@@ -68,9 +68,12 @@ pub struct ProvingArgs {
     /// Whether to skip waiting for the proof generation process to complete
     #[clap(long, env, default_value_t = false)]
     pub skip_await_proof: bool,
-    /// Whether to keep cache data after successful completion
+    /// Whether to clear cache data after successful proof completion
     #[clap(long, env, default_value_t = false)]
     pub clear_cache_data: bool,
+    /// Whether to export profiling data to a CSV file
+    #[clap(long, env, default_value_t = false)]
+    pub export_profile_csv: bool,
 
     #[clap(flatten)]
     #[cfg(feature = "eigen")]

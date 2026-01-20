@@ -14,6 +14,7 @@
 
 use crate::args::ProvingArgs;
 use crate::client::proving::{acquire_owned_permit, SEMAPHORE_R0VM};
+use crate::profiling::{Profile, ProfiledReceipt};
 use crate::proof::save_to_bincoded_file;
 use crate::proof::{proof_id, read_bincoded_file};
 use crate::ProvingError;
@@ -46,6 +47,7 @@ use risc0_zkvm::sha::Digestible;
 use risc0_zkvm::{default_executor, Digest, ExecutorEnv, Journal, Receipt};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -346,7 +348,9 @@ pub async fn run_boundless_client<A: NoUninit + Into<Digest>>(
     witness_frames: Vec<Vec<u8>>,
     stitched_proofs: Vec<Receipt>,
     proving_args: &ProvingArgs,
-) -> Result<Receipt, ProvingError> {
+    profile: Profile,
+    data_dir: Option<&PathBuf>,
+) -> Result<ProfiledReceipt, ProvingError> {
     info!("Running boundless client.");
 
     // Create R2 storage if configured
@@ -434,6 +438,8 @@ pub async fn run_boundless_client<A: NoUninit + Into<Digest>>(
             &stitched_proofs,
             proving_args,
             &requirements,
+            profile.clone(),
+            data_dir,
         )
         .await
         {
@@ -547,7 +553,8 @@ pub async fn look_back(
     requirements: &Requirements,
     proving_args: &ProvingArgs,
     previous_nonce: &mut Option<u32>,
-) -> Result<Option<Receipt>, ProvingError> {
+    profile: &Profile,
+) -> Result<Option<ProfiledReceipt>, ProvingError> {
     let boundless_wallet_address = boundless_client.signer.as_ref().unwrap().address();
     loop {
         let nonce = next_nonce(requirements, *previous_nonce);
@@ -595,6 +602,7 @@ pub async fn look_back(
             req_params.image_id.unwrap_or_default().0,
             market.boundless_order_check_interval,
             request.expires_at(),
+            profile.clone(),
         )
         .await
         {
@@ -615,10 +623,10 @@ pub async fn retrieve_proof(
     image_id: impl Into<Digest>,
     interval: u64,
     expires_at: u64,
-) -> Result<Receipt, ClientError> {
+    mut profile: Profile,
+) -> Result<ProfiledReceipt, ClientError> {
     // Wait for the request to be fulfilled by the market, returning the journal and seal.
     info!("Waiting for 0x{request_id:x} to be fulfilled");
-    // boundless_client.boundless_market.is_locked()
 
     loop {
         match boundless_client
@@ -643,7 +651,68 @@ pub async fn retrieve_proof(
                     return Err(ClientError::RequestError(RequestError::MissingRequirements));
                 };
 
-                return Ok(*receipt);
+                // Find proving cost
+                let price_point = if retry_res_timeout!(
+                    15,
+                    boundless_client
+                        .boundless_market
+                        .is_locked(request_id)
+                        .await
+                )
+                .await
+                {
+                    retry_res_timeout!(
+                        15,
+                        boundless_client
+                            .boundless_market
+                            .query_request_locked_event(request_id, None, None)
+                            .await
+                    )
+                    .await
+                    .block_number
+                } else {
+                    retry_res_timeout!(
+                        15,
+                        boundless_client
+                            .boundless_market
+                            .query_request_fulfilled_event(request_id, None, None)
+                            .await
+                    )
+                    .await
+                    .block_number
+                };
+
+                let timestamp = retry_res_timeout!(
+                    15,
+                    boundless_client
+                        .provider()
+                        .get_block_by_number(BlockNumberOrTag::Number(price_point))
+                        .await
+                        .context("get_block_by_number")?
+                        .ok_or_else(|| anyhow!("Failed to fetch block"))
+                )
+                .await
+                .header
+                .timestamp;
+
+                let (proof_request, _) = retry_res_timeout!(
+                    15,
+                    boundless_client
+                        .fetch_proof_request(request_id, None, None)
+                        .await
+                        .context("fetch_proof_request")
+                )
+                .await;
+                match proof_request.offer.price_at(timestamp) {
+                    Ok(cost) => {
+                        profile = profile.with_boundless_cost(cost);
+                    }
+                    Err(err) => {
+                        error!("Could not calculate boundless request {request_id} price at {timestamp}: {err:?}");
+                    }
+                }
+
+                return Ok((*receipt, profile));
             }
             Err(e) => {
                 if matches!(
@@ -672,91 +741,27 @@ pub async fn request_proof<A: NoUninit + Into<Digest>>(
     stitched_proofs: &Vec<Receipt>,
     proving_args: &ProvingArgs,
     requirements: &Requirements,
-) -> Result<Receipt, ProvingError> {
-    // Check prior requests
-    let fresh_nonce = if market.boundless_look_back {
-        let mut nonce_target = None;
-        // note: look_back only returns the NotAwaitingProof error
-        if let Some(proof) = look_back(
-            market,
-            boundless_client,
-            requirements,
-            proving_args,
-            &mut nonce_target,
-        )
-        .await?
-        {
-            return Ok(proof);
-        }
-        nonce_target.unwrap()
-    } else {
-        get_next_fresh_nonce(market, boundless_client, requirements, None).await
-    };
-
-    // Upload program
-    let bin_file_name = binary_file_name(image.0);
-    let program_url = loop {
-        match (
-            market.boundless_enable_upload_caching,
-            read_bincoded_file::<String>(&bin_file_name)
-                .await
-                .map(|s| Url::parse(&s)),
-        ) {
-            (true, Ok(Ok(url))) => {
-                info!("Using Kailua binary previously uploaded to {url}.");
-                break url;
-            }
-            _ => {
-                // Only one prover may upload data at a time
-                let Ok(boundless_net_lock) = BOUNDLESS_NET.try_lock() else {
-                    sleep(Duration::from_secs(1)).await;
-                    continue;
-                };
-
-                info!(
-                    "Uploading {} Kailua ELF.",
-                    human_bytes(image.1.len() as f64)
-                );
-                let program_url = if let Some(r2) = r2_storage {
-                    retry_res!(r2
-                        .upload_program(image.1)
-                        .await
-                        .context("R2Storage::upload_program"))
-                    .await
-                } else {
-                    retry_res!(boundless_client
-                        .upload_program(image.1)
-                        .await
-                        .context("Client::upload_program"))
-                    .await
-                };
-                if let Err(err) =
-                    save_to_bincoded_file(&program_url.to_string(), &bin_file_name).await
-                {
-                    warn!("Failed to cache Kailua program url: {err:?}");
-                }
-                drop(boundless_net_lock);
-                break program_url;
-            }
-        };
-    };
-
-    info!("Kailua ELF URL: {program_url}");
-    // Preflight execution to get cycle count
+    profile: Profile,
+    data_dir: Option<&PathBuf>,
+) -> Result<ProfiledReceipt, ProvingError> {
+    // Get cycle count
     let req_file_name = request_file_name(image.0, journal.clone());
-    let cycle_count = match (
+    let request_cycles = match (
         market.boundless_assume_cycle_count,
-        read_bincoded_file::<BoundlessRequest>(&req_file_name).await,
+        read_bincoded_file::<BoundlessRequest>(data_dir, &req_file_name).await,
     ) {
         (_, Ok(request)) => {
             // we sleep here so to avoid pinata api rate limits
             sleep(Duration::from_secs(2)).await;
-            request.cycle_count
+            request
         }
         (Some(cycle_count), _) => {
             // we sleep here so to avoid pinata api rate limits
             sleep(Duration::from_secs(2)).await;
-            cycle_count
+            BoundlessRequest {
+                total_cycle_count: cycle_count,
+                user_cycle_count: cycle_count,
+            }
         }
         (None, Err(err)) => {
             warn!("Preflighting execution: {err:?}");
@@ -796,26 +801,101 @@ pub async fn request_proof<A: NoUninit + Into<Digest>>(
             .map_err(ProvingError::OtherError)?
             .map_err(|e| ProvingError::OtherError(anyhow!(e)))?;
             drop(r0vm_permit);
-            let cycle_count = session_info
-                .segments
-                .iter()
-                .map(|segment| 1 << segment.po2)
-                .sum::<u64>();
-            let cached_data = BoundlessRequest { cycle_count };
-            if let Err(err) = save_to_bincoded_file(&cached_data, &req_file_name).await {
+            let total_cycle_count =
+                (1u64 << segment_limit as u64) * (session_info.segments.len() as u64);
+            let cached_data = BoundlessRequest {
+                total_cycle_count,
+                user_cycle_count: session_info.cycles(),
+            };
+            if let Err(err) = save_to_bincoded_file(&cached_data, data_dir, &req_file_name).await {
                 warn!("Failed to cache cycle count data: {err:?}");
             }
-            cycle_count
+            cached_data
         }
     };
-    info!("Request cycle count: {cycle_count}.");
+    info!("Request cycle count: {}.", request_cycles.total_cycle_count);
+    // Set profiled cycle count data
+    let profile = profile.with_cycle_counts(
+        request_cycles.system_cycle_count(),
+        request_cycles.user_cycle_count,
+    );
 
-    // Pass in input frames
+    // Check prior requests
+    let fresh_nonce = if market.boundless_look_back {
+        let mut nonce_target = None;
+        // note: look_back only returns the NotAwaitingProof error
+        if let Some(proof) = look_back(
+            market,
+            boundless_client,
+            requirements,
+            proving_args,
+            &mut nonce_target,
+            &profile,
+        )
+        .await?
+        {
+            return Ok(proof);
+        }
+        nonce_target.unwrap()
+    } else {
+        get_next_fresh_nonce(market, boundless_client, requirements, None).await
+    };
+
+    // Upload program
+    let bin_file_name = binary_file_name(image.0);
+    let program_url = loop {
+        match (
+            market.boundless_enable_upload_caching,
+            read_bincoded_file::<String>(data_dir, &bin_file_name)
+                .await
+                .map(|s| Url::parse(&s)),
+        ) {
+            (true, Ok(Ok(url))) => {
+                info!("Using Kailua binary previously uploaded to {url}.");
+                break url;
+            }
+            _ => {
+                // Only one prover may upload data at a time
+                let Ok(boundless_net_lock) = BOUNDLESS_NET.try_lock() else {
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                };
+
+                info!(
+                    "Uploading {} Kailua ELF.",
+                    human_bytes(image.1.len() as f64)
+                );
+                let program_url = if let Some(r2) = r2_storage {
+                    retry_res!(r2
+                        .upload_program(image.1)
+                        .await
+                        .context("R2Storage::upload_program"))
+                    .await
+                } else {
+                    retry_res!(boundless_client
+                        .upload_program(image.1)
+                        .await
+                        .context("Client::upload_program"))
+                    .await
+                };
+                if let Err(err) =
+                    save_to_bincoded_file(&program_url.to_string(), data_dir, &bin_file_name).await
+                {
+                    warn!("Failed to cache Kailua program url: {err:?}");
+                }
+                drop(boundless_net_lock);
+                break program_url;
+            }
+        };
+    };
+    info!("Kailua ELF URL: {program_url}");
+
+    // Upload input
     let inp_file_name = input_file_name(image.0, journal.clone());
     let input_url = loop {
         match (
             market.boundless_enable_upload_caching,
-            read_bincoded_file::<String>(&inp_file_name)
+            read_bincoded_file::<String>(data_dir, &inp_file_name)
                 .await
                 .map(|s| Url::parse(&s)),
         ) {
@@ -870,7 +950,7 @@ pub async fn request_proof<A: NoUninit + Into<Digest>>(
                 // avoid api rate limits
                 sleep(Duration::from_secs(2)).await;
                 if let Err(err) =
-                    save_to_bincoded_file(&input_url.to_string(), &inp_file_name).await
+                    save_to_bincoded_file(&input_url.to_string(), data_dir, &inp_file_name).await
                 {
                     warn!("Failed to cache Kailua input url: {err:?}");
                 }
@@ -898,12 +978,13 @@ pub async fn request_proof<A: NoUninit + Into<Digest>>(
     .header
     .timestamp;
 
-    let priced_cycles = U256::from((market.boundless_mega_cycle_min << 20).max(cycle_count));
+    let priced_cycles =
+        U256::from((market.boundless_mega_cycle_min << 20).max(request_cycles.total_cycle_count));
     let min_price = market.boundless_cycle_min_wei * priced_cycles;
     let max_price = market.boundless_cycle_max_wei * priced_cycles;
     let timed_mega_cycles = market
         .boundless_mega_cycle_min
-        .max(cycle_count.div_ceil(1 << 20)) as f64;
+        .max(request_cycles.total_cycle_count.div_ceil(1 << 20)) as f64;
     let bid_delay_time = market
         .boundless_order_min_bid_delay
         .max((market.boundless_order_bid_delay_factor * timed_mega_cycles) as u64);
@@ -924,7 +1005,7 @@ pub async fn request_proof<A: NoUninit + Into<Digest>>(
     let request = boundless_client
         .new_request()
         .with_journal(journal)
-        .with_cycles(cycle_count)
+        .with_cycles(request_cycles.total_cycle_count)
         .with_program_url(program_url)
         .context("RequestParams::with_program_url")
         .map_err(ProvingError::OtherError)?
@@ -982,12 +1063,14 @@ pub async fn request_proof<A: NoUninit + Into<Digest>>(
         return Err(ProvingError::NotAwaitingProof);
     }
 
+    // Wait for request fulfillment
     retrieve_proof(
         boundless_client,
         request_id,
         image.0,
         market.boundless_order_check_interval,
         expires_at,
+        profile,
     )
     .await
     .context("retrieve_proof")
@@ -1012,7 +1095,15 @@ pub fn input_file_name<A: NoUninit>(image_id: A, journal: impl Into<Journal>) ->
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoundlessRequest {
     /// Number of cycles that require proving
-    pub cycle_count: u64,
+    pub total_cycle_count: u64,
+    /// Number of user cycles
+    pub user_cycle_count: u64,
+}
+
+impl BoundlessRequest {
+    pub fn system_cycle_count(&self) -> u64 {
+        self.total_cycle_count - self.user_cycle_count
+    }
 }
 
 /// R2 Storage implementation for manual uploads with custom prefix
