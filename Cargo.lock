@@ -6465,7 +6465,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-build"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy-primitives 1.4.1",
  "bytemuck",
@@ -6474,7 +6474,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-cli"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy",
  "anyhow",
@@ -6483,6 +6483,8 @@ dependencies = [
  "boundless-market",
  "bytemuck",
  "clap",
+ "csv",
+ "futures",
  "hex",
  "human_bytes",
  "kailua-build",
@@ -6498,10 +6500,12 @@ dependencies = [
  "kona-registry",
  "lazy_static",
  "opentelemetry",
+ "rayon",
  "risc0-circuit-recursion",
  "risc0-zkvm",
  "tempfile",
  "tokio",
+ "tokio-rayon",
  "tokio-retry",
  "tracing",
  "tracing-subscriber 0.3.22",
@@ -6509,7 +6513,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-contracts"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy",
  "foundry-compilers",
@@ -6603,7 +6607,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-proposer"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy",
  "anyhow",
@@ -6619,7 +6623,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-prover"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy",
  "alloy-primitives 1.4.1",
@@ -6688,7 +6692,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-rpc"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy",
  "anyhow",
@@ -6705,7 +6709,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-sync"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy",
  "alloy-rpc-types-beacon",
@@ -6742,7 +6746,7 @@ dependencies = [
 
 [[package]]
 name = "kailua-validator"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "alloy",
  "anyhow",
@@ -12607,6 +12611,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rayon"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cf33a76e0b1dd03b778f83244137bd59887abf25c0e87bc3e7071105f457693"
+dependencies = [
+ "rayon",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-retry"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13551,7 +13565,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
