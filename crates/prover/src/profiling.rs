@@ -1,6 +1,6 @@
 use crate::current_time;
 use crate::proof::{proof_id, proof_id_file_name, read_bincoded_file, save_to_file};
-use alloy_primitives::{B256, U256};
+use alloy_primitives::{Address, B256, U256};
 use bytemuck::NoUninit;
 use kailua_kona::executor::Execution;
 use kailua_kona::oracle::WitnessOracle;
@@ -38,6 +38,12 @@ pub struct Profile {
     pub cycles_system: Option<u64>,
     /// Total proving market costs
     pub boundless_cost: Option<U256>,
+    /// Market request id
+    pub boundless_request: Option<U256>,
+    /// Market prover address
+    pub boundless_prover: Option<Address>,
+    /// Address that locked the proof request
+    pub lock_holder: Option<Address>,
     /// Number of SNARK recursive verifications
     pub snarks: Option<u64>,
     /// Number of STARK recursive verifications
@@ -181,6 +187,21 @@ impl Profile {
         self
     }
 
+    pub fn with_boundless_request(mut self, boundless_request: U256) -> Self {
+        self.boundless_request = Some(boundless_request);
+        self
+    }
+
+    pub fn with_boundless_prover(mut self, boundless_prover: Address) -> Self {
+        self.boundless_prover = Some(boundless_prover);
+        self
+    }
+
+    pub fn with_lock_holder(mut self, lock_holder: Address) -> Self {
+        self.lock_holder = Some(lock_holder);
+        self
+    }
+
     pub fn with_start_time(mut self, time_started: u64) -> Self {
         self.time_started = Some(time_started);
         self
@@ -239,6 +260,9 @@ impl Profile {
             "cycles_per_block",
             "cycles_per_tx",
             "cycles_per_gas",
+            "request_id",
+            "prover",
+            "lock_holder",
             "cost",
             "cost_per_block",
             "cost_per_tx",
@@ -306,6 +330,18 @@ impl Profile {
                 cycles_per_block.map(|c| c.to_string()).unwrap_or_default(),
                 cycles_per_tx.map(|c| c.to_string()).unwrap_or_default(),
                 cycles_per_gas.map(|c| c.to_string()).unwrap_or_default(),
+                profile
+                    .boundless_request
+                    .map(|r| format!("{r:x}"))
+                    .unwrap_or_default(),
+                profile
+                    .boundless_prover
+                    .map(|p| p.to_string())
+                    .unwrap_or_default(),
+                profile
+                    .lock_holder
+                    .map(|p| p.to_string())
+                    .unwrap_or_default(),
                 profile
                     .boundless_cost
                     .map(|b| b.to_string())
