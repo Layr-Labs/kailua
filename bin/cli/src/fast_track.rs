@@ -91,6 +91,12 @@ pub struct FastTrackArgs {
     /// The timeout after which a counter-proposal can not be made
     #[clap(long, env)]
     pub challenge_timeout: u64,
+    /// The timeout after which a fault proof permit expires
+    #[clap(long, env)]
+    pub proof_permit_timeout: u64,
+    /// The delay after which a fault proof permit is active
+    #[clap(long, env)]
+    pub proof_permit_delay: u64,
 
     /// Secret key of L1 wallet to use for deploying contracts
     #[clap(flatten)]
@@ -254,7 +260,7 @@ pub async fn fast_track(args: FastTrackArgs) -> anyhow::Result<()> {
         .connect_http(args.eth_rpc_url.as_str().try_into()?);
 
     // Deploy or reuse existing RISCZeroVerifier contracts
-    let verifier_contract_address = match &args.verifier_contract {
+    let zkvm_contract_address = match &args.verifier_contract {
         None => await_tel!(
             context,
             deploy_verifier(
@@ -267,6 +273,23 @@ pub async fn fast_track(args: FastTrackArgs) -> anyhow::Result<()> {
         .context("deploy_verifier")?,
         Some(address) => Address::from_str(address)?,
     };
+
+    // Deploy KailuaVerifier contract
+    let receipt = KailuaVerifier::deploy_builder(
+        &deployer_provider,
+        zkvm_contract_address,
+        bytemuck::cast::<[u32; 8], [u8; 32]>(KAILUA_FPVM_KONA_ID).into(),
+        rollup_config_hash.into(),
+        args.proof_permit_timeout,
+        args.proof_permit_delay,
+    )
+    .transact_with_context(context.clone(), "KailuaVerifier::deploy")
+    .await
+    .context("KailuaVerifier::deploy")?;
+    info!("KailuaVerifier::deploy: {} gas", receipt.gas_used);
+    let verifier_contract_address = receipt
+        .contract_address
+        .ok_or_else(|| anyhow!("KailuaVerifier not deployed"))?;
 
     // Deploy KailuaTreasury contract
     let root_claim = await_tel!(
@@ -284,8 +307,6 @@ pub async fn fast_track(args: FastTrackArgs) -> anyhow::Result<()> {
     let receipt = KailuaTreasury::deploy_builder(
         &deployer_provider,
         verifier_contract_address,
-        bytemuck::cast::<[u32; 8], [u8; 32]>(KAILUA_FPVM_KONA_ID).into(),
-        rollup_config_hash.into(),
         args.proposal_output_count,
         args.output_block_span,
         KAILUA_GAME_TYPE,
@@ -312,14 +333,15 @@ pub async fn fast_track(args: FastTrackArgs) -> anyhow::Result<()> {
             tracer,
             "DisputeGameFactory::setImplementation",
             exec_safe_txn(
-                dispute_game_factory.setImplementation(KAILUA_GAME_TYPE, kailua_treasury_impl_addr),
+                dispute_game_factory
+                    .setImplementation_0(KAILUA_GAME_TYPE, kailua_treasury_impl_addr),
                 factory_owner_safe,
                 owner_address,
             )
         )?;
     } else {
         dispute_game_factory
-            .setImplementation(KAILUA_GAME_TYPE, kailua_treasury_impl_addr)
+            .setImplementation_0(KAILUA_GAME_TYPE, kailua_treasury_impl_addr)
             .transact_with_context(context.clone(), "DisputeGameFactory::setImplementation")
             .await
             .context("DisputeGameFactory::setImplementation")?;
@@ -512,14 +534,14 @@ pub async fn fast_track(args: FastTrackArgs) -> anyhow::Result<()> {
             "DisputeGameFactory::setImplementation",
             exec_safe_txn(
                 dispute_game_factory
-                    .setImplementation(KAILUA_GAME_TYPE, *kailua_game_contract.address()),
+                    .setImplementation_0(KAILUA_GAME_TYPE, *kailua_game_contract.address()),
                 factory_owner_safe,
                 owner_address,
             )
         )?;
     } else {
         dispute_game_factory
-            .setImplementation(KAILUA_GAME_TYPE, *kailua_game_contract.address())
+            .setImplementation_0(KAILUA_GAME_TYPE, *kailua_game_contract.address())
             .transact_with_context(context.clone(), "DisputeGameFactory::setImplementation")
             .await
             .context("DisputeGameFactory::setImplementation")?;

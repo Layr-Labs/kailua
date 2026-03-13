@@ -13,14 +13,27 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import "./KailuaLib.sol";
-import "./vendor/FlatOPImportV1.4.0.sol";
-import "./vendor/FlatOPImportV1.4.0.sol";
-import "./vendor/FlatR0ImportV2.0.2.sol";
+import "./KailuaVerifier.sol";
+import {Clone} from "@solady/utils/Clone.sol";
+import {GameStatus, IDisputeGame} from "@optimism/interfaces/dispute/IDisputeGame.sol";
+import {IDisputeGameFactory, IOptimismPortal2} from "@optimism/interfaces/L1/IOptimismPortal2.sol";
+import {Claim, Hash, GameType, Timestamp, Duration} from "@optimism/src/dispute/lib/Types.sol";
+import {
+    AlreadyInitialized,
+    GameNotInProgress,
+    ClaimAlreadyResolved,
+    InvalidDisputedClaimIndex,
+    InvalidParent,
+    GameNotResolved
+} from "@optimism/src/dispute/lib/Errors.sol";
 
-abstract contract KailuaTournament is Clone, IDisputeGame {
+/// @notice Thrown when a proposal contains invalid trailing data
+error InvalidDataRemainder();
+
+abstract contract KailuaTournament is IKailuaTournament, Clone, IDisputeGame {
     // ------------------------------
     // Immutable configuration
     // ------------------------------
@@ -28,14 +41,8 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
     /// @notice The Kailua Treasury Implementation contract address
     IKailuaTreasury public immutable KAILUA_TREASURY;
 
-    /// @notice The RISC Zero verifier contract
-    IRiscZeroVerifier public immutable RISC_ZERO_VERIFIER;
-
-    /// @notice The RISC Zero image id of the fault proof program
-    bytes32 public immutable FPVM_IMAGE_ID;
-
-    /// @notice The hash of the game configuration
-    bytes32 public immutable ROLLUP_CONFIG_HASH;
+    /// @notice The Kailua Verifier contract
+    KailuaVerifier public immutable KAILUA_VERIFIER;
 
     /// @notice The number of outputs a proposal must publish
     uint64 public immutable PROPOSAL_OUTPUT_COUNT;
@@ -50,25 +57,21 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
     GameType public immutable GAME_TYPE;
 
     /// @notice The OptimismPortal2 instance
-    OptimismPortal2 public immutable OPTIMISM_PORTAL;
+    IOptimismPortal2 public immutable OPTIMISM_PORTAL;
 
     /// @notice The DisputeGameFactory instance
-    DisputeGameFactory public immutable DISPUTE_GAME_FACTORY;
+    IDisputeGameFactory public immutable DISPUTE_GAME_FACTORY;
 
     constructor(
         IKailuaTreasury _kailuaTreasury,
-        IRiscZeroVerifier _verifierContract,
-        bytes32 _imageId,
-        bytes32 _configHash,
+        KailuaVerifier _kailuaVerifier,
         uint64 _proposalOutputCount,
         uint64 _outputBlockSpan,
         GameType _gameType,
-        OptimismPortal2 _optimismPortal
+        IOptimismPortal2 _optimismPortal
     ) {
         KAILUA_TREASURY = _kailuaTreasury;
-        RISC_ZERO_VERIFIER = _verifierContract;
-        FPVM_IMAGE_ID = _imageId;
-        ROLLUP_CONFIG_HASH = _configHash;
+        KAILUA_VERIFIER = _kailuaVerifier;
         PROPOSAL_OUTPUT_COUNT = _proposalOutputCount;
         OUTPUT_BLOCK_SPAN = _outputBlockSpan;
         // discard published root commitment in calldata
@@ -97,15 +100,6 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
 
         // Read respected status
         wasRespectedGameTypeWhenCreated = OPTIMISM_PORTAL.respectedGameType().raw() == GAME_TYPE.raw();
-    }
-
-    // ------------------------------
-    // OP-CONTRACTS v5 TEMPORARY PATCH
-    // ------------------------------
-
-    /// @notice This is a workaround to allow withdrawals under op-contracts v5.0.0
-    function anchorStateRegistry() external view returns (address registry_) {
-        registry_ = msg.sender;
     }
 
     // ------------------------------
@@ -160,10 +154,17 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
 
     /// @notice Returns the address of the prover of the specified signature or the prover of the valid signature
     function getPayoutRecipient(bytes32 childSignature) internal view returns (address payoutRecipient) {
-        payoutRecipient = prover[childSignature];
+        // The successful exclusive permit owner receives the payout.
+        payoutRecipient = KAILUA_VERIFIER.faultProofPermitBeneficiary(IKailuaTournament(this), childSignature);
+        // If none exists, then the successful fault prover is the recipient.
+        if (payoutRecipient == address(0x0)) {
+            payoutRecipient = prover[childSignature];
+        }
+        // Otherwise, the successful validity prover receives the payout.
         if (payoutRecipient == address(0x0)) {
             payoutRecipient = prover[validChildSignature];
         }
+        // Otherwise the child signature is viable and there is no recipient.
     }
 
     /// @notice Returns true iff the child proposal was eliminated
@@ -225,6 +226,7 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
         bytes calldata kzgProof
     ) external virtual returns (bool success);
 
+    /// @notice Updates the provability of a child signature if not already set
     function updateProofStatus(address payoutRecipient, bytes32 childSignature, ProofStatus outcome) internal {
         // INVARIANT: Proofs can only be submitted once
         if (proofStatus[childSignature] != ProofStatus.NONE) {
@@ -283,6 +285,11 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
     }
 
     /// @inheritdoc IDisputeGame
+    function l2SequenceNumber() public pure returns (uint256 l2SequenceNumber_) {
+        l2SequenceNumber_ = l2BlockNumber();
+    }
+
+    /// @inheritdoc IDisputeGame
     function gameData() external view returns (GameType gameType_, Claim rootClaim_, bytes memory extraData_) {
         gameType_ = GAME_TYPE;
         rootClaim_ = this.rootClaim();
@@ -291,6 +298,11 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
 
     /// @notice True iff the Kailua GameType was respected by OptimismPortal at time of creation
     bool public wasRespectedGameTypeWhenCreated;
+
+    /// @notice This is a workaround for withdrawal compatibility under op-contracts v5.0.0
+    function anchorStateRegistry() external view returns (address registry_) {
+        registry_ = msg.sender;
+    }
 
     // ------------------------------
     // Tournament
@@ -637,8 +649,8 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
             revert UnknownGame();
         }
 
-        // Construct the expected journal
-        bytes memory journal = abi.encodePacked(
+        // Revert on proof verification failure
+        KAILUA_VERIFIER.verify(
             // The address of the recipient of the payout for this proof
             payoutRecipient,
             // The blob equivalence precondition hash
@@ -651,14 +663,9 @@ abstract contract KailuaTournament is Clone, IDisputeGame {
             computedOutputHash,
             // The claim block number
             uint64(l2BlockNumber() + outputCount * OUTPUT_BLOCK_SPAN),
-            // The rollup configuration hash
-            ROLLUP_CONFIG_HASH,
-            // The FPVM Image ID
-            FPVM_IMAGE_ID
+            // The cryptographic proof
+            encodedSeal
         );
-
-        // Revert on proof verification failure
-        RISC_ZERO_VERIFIER.verify(encodedSeal, FPVM_IMAGE_ID, sha256(journal));
 
         // Mark the child as proven
         updateProofStatus(payoutRecipient, childSignature, outcome);

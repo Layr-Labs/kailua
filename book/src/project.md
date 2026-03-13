@@ -44,8 +44,9 @@ The CLI for Kailua the main entry point for all supported commands:
 ## Contracts
 
 The contracts directory is a foundry project comprised of the following main contracts:
+* `KailuaVerifier.sol`: Logic for verifying fault/validity proofs and fault proof locks.
 * `KailuaTournament.sol`: Logic for resolving disputes between contradictory proposals.
-* `KailuaTreasury.sol`: Logic for maintaining collateral and paying out provers for resolving disputes.
+* `KailuaTreasury.sol`: Logic for maintaining proposer collateral.
 * `KailuaGame.sol`: Logic for introducing new sequencing proposals.
 * `KailuaLib.sol`: Misc. utilities.
 
@@ -63,7 +64,7 @@ Rollups with alternative DA requirements are supported through the following com
 * `build/risczero/hokulea`: The zkVM binary for rollups on EigenDA.
 * `build/risczero/hana`: The zkVM binary for rollups on Celestia.
 * `crates/hokulea`: A wrapper crate around `kailua-kona` with Eigen DA support.
-* `crates/hokulea`: A wrapper crate around `kailua-kona` with Celestia DA support.
+* `crates/hana`: A wrapper crate around `kailua-kona` with Celestia DA support.
 
 ```admonish warning
 Celestia DA support is still an experimental work in progress with known liveness vulnerabilities.

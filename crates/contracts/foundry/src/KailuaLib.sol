@@ -13,10 +13,10 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
-import "./vendor/FlatOPImportV1.4.0.sol";
-import "./vendor/FlatR0ImportV2.0.2.sol";
+import {Timestamp} from "@optimism/src/dispute/lib/Types.sol";
+import {BondTransferFailed} from "@optimism/src/dispute/lib/Errors.sol";
 
 /// @notice Denotes the proven status of the game
 /// @custom:value NONE indicates that no proof has been submitted yet.
@@ -33,10 +33,6 @@ error Blacklisted(address source, address expected);
 // 0x9d3e7d24
 /// @notice Thrown when a child from an unknown source appends itself to a tournament
 error UnknownGame();
-
-// 0xc105260a
-/// @notice Thrown when pruning children of an unresolved parent
-error GameNotResolved();
 
 // 0x8b1dfa22
 /// @notice Thrown when eliminating an already removed child
@@ -85,16 +81,15 @@ error BlockNumberMismatch(uint256 anchored, uint256 initialized);
 /// @param parentGame The address of the parent proposal being extended
 error VanguardError(address parentGame);
 
-/// @notice Emitted when a proof is submitted.
-/// @param signature The proposal signature
-/// @param status The proven status
-event Proven(bytes32 indexed signature, ProofStatus indexed status);
-
-/// @notice Emitted when the participation bond is updated
-/// @param amount The new required bond amount
-event BondUpdated(uint256 amount);
+// 0x428e0b92
+/// @notice Thrown when a non-factory owner calls an owner-only function.
+error NotFactoryOwner();
 
 interface IKailuaTreasury {
+    /// @notice Emitted when the participation bond is updated
+    /// @param amount The new required bond amount
+    event BondUpdated(uint256 amount);
+
     /// @notice Returns the game index at which proposer was proven faulty
     function eliminationRound(address proposer) external view returns (uint256);
 
@@ -112,6 +107,41 @@ interface IKailuaTreasury {
 
     /// @notice Updates the last resolved contract address to that of the caller
     function updateLastResolved() external;
+
+    /// @notice Returns the collateral required to submit proposals
+    function participationBond() external view returns (uint256);
+
+    /// @notice Returns the prover's number of shares in elimination rewards
+    function ELIMINATION_SPLIT_PROVER_NUM() external view returns (uint256);
+
+    /// @notice Returns the total number of shares for elimination rewards
+    function ELIMINATION_SPLIT_DENOM() external view returns (uint256);
+}
+
+interface IKailuaTournament {
+    /// @notice Emitted when a proof is submitted.
+    /// @param signature The proposal signature
+    /// @param status The proven status
+    event Proven(bytes32 indexed signature, ProofStatus indexed status);
+
+    /// @notice Returns the KailuaTreasury of this tournament
+    function KAILUA_TREASURY() external view returns (IKailuaTreasury);
+    /// @notice The timestamp of when the first proof for a proposal signature was made
+    function provenAt(bytes32) external view returns (Timestamp);
+    /// @notice Returns the hash of the output claim and all blob hashes associated with this proposal
+    function signature() external view returns (bytes32);
+    /// @notice Returns whether a child can be considered valid
+    function isViableSignature(bytes32 childSignature) external view returns (bool);
+    /// @notice Returns the signature of the child proven valid
+    function validChildSignature() external view returns (bytes32);
+}
+
+library KailuaPayLib {
+    /// @notice Transfers ETH from the contract's balance to the recipient
+    function pay(uint256 amount, address recipient) internal {
+        (bool success,) = recipient.call{value: amount}(hex"");
+        if (!success) revert BondTransferFailed();
+    }
 }
 
 library KailuaKZGLib {
@@ -170,7 +200,7 @@ library KailuaKZGLib {
         uint256 value,
         bytes calldata blobCommitment,
         bytes calldata proof
-    ) internal returns (bool success) {
+    ) internal view returns (bool success) {
         uint256 rootOfUnity = modExp(reverseBits(index));
         // Byte range	Name	        Description
         // [0:32]	    versioned_hash	Reference to a blob in the execution layer.
@@ -180,7 +210,7 @@ library KailuaKZGLib {
         // [144:192]	proof	        Proof associated with the commitment.
         bytes memory kzgCallData = abi.encodePacked(versionedBlobHash, rootOfUnity, value, blobCommitment, proof);
         // The precompile will reject non-canonical field elements (i.e. value must be less than BLS_MODULUS).
-        (bool _success, bytes memory kzgResult) = KZG.call(kzgCallData);
+        (bool _success, bytes memory kzgResult) = KZG.staticcall(kzgCallData);
         // Validate the precompile response
         require(keccak256(kzgResult) == KZG_RESULT);
         // Return the result
@@ -188,10 +218,10 @@ library KailuaKZGLib {
     }
 
     /// @notice Calls the modular exponentiation precompile with a fixed base and modulus
-    function modExp(uint256 exponent) internal returns (uint256 result) {
+    function modExp(uint256 exponent) internal view returns (uint256 result) {
         bytes memory modExpData =
             abi.encodePacked(uint256(32), uint256(32), uint256(32), ROOT_OF_UNITY, exponent, BLS_MODULUS);
-        (bool success, bytes memory mexpResult) = MOD_EXP.call(modExpData);
+        (bool success, bytes memory mexpResult) = MOD_EXP.staticcall(modExpData);
         require(success);
         result = uint256(bytes32(mexpResult));
     }

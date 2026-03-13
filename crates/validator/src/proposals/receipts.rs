@@ -15,8 +15,8 @@
 use crate::args::ValidateArgs;
 use crate::channel::{DuplexChannel, Message};
 use crate::proposals::encode_seal;
-use alloy::primitives::Bytes;
-use alloy::primitives::B256;
+use crate::requests::decrement_active_provers;
+use alloy::primitives::{Bytes, B256};
 use alloy::providers::Provider;
 use anyhow::Context;
 use chrono::TimeZone;
@@ -120,11 +120,22 @@ pub async fn publish_receipt_proofs<P: Provider>(
             continue;
         }
         let parent_contract = KailuaTournament::new(parent.contract, validator_provider);
-        let expected_fpvm_image_id = parent_contract
+        let parent_verifier = KailuaVerifier::new(
+            parent_contract
+                .KAILUA_VERIFIER()
+                .stall_with_context(
+                    context.clone(),
+                    "KailuaTournament::KAILUA_VERIFIER",
+                    args.sync.provider.timeouts.eth_rpc_timeout,
+                )
+                .await,
+            validator_provider,
+        );
+        let expected_fpvm_image_id = parent_verifier
             .FPVM_IMAGE_ID()
             .stall_with_context(
                 context.clone(),
-                "KailuaTournament::FPVM_IMAGE_ID",
+                "KailuaVerifier::FPVM_IMAGE_ID",
                 args.sync.provider.timeouts.eth_rpc_timeout,
             )
             .await
@@ -239,11 +250,11 @@ pub async fn publish_receipt_proofs<P: Provider>(
                 } else {
                     info!("Precondition hash {precondition_hash} confirmed.")
                 }
-                let config_hash = proposal_contract
+                let config_hash = parent_verifier
                     .ROLLUP_CONFIG_HASH()
                     .stall_with_context(
                         context.clone(),
-                        "KailuaGame::ROLLUP_CONFIG_HASH",
+                        "KailuaVerifier::ROLLUP_CONFIG_HASH",
                         args.sync.provider.timeouts.eth_rpc_timeout,
                     )
                     .await;
@@ -292,6 +303,9 @@ pub async fn publish_receipt_proofs<P: Provider>(
                 .context("KailuaTournament::proveValidity")
             {
                 Ok(receipt) => {
+                    // Decrement active provers count
+                    decrement_active_provers().await;
+                    // Report proof submission
                     info!("Validity proof submitted: {:?}", receipt.transaction_hash);
                     let proof_status = parent_contract
                         .provenAt(proposal.signature)
@@ -325,6 +339,16 @@ pub async fn publish_receipt_proofs<P: Provider>(
                             ),
                         ],
                     );
+                    // Release any held permits
+                    agent
+                        .release_fp_permit(
+                            parent,
+                            proposal,
+                            proof_journal.payout_recipient,
+                            validator_provider,
+                            args.sync.provider.timeouts.eth_rpc_timeout,
+                        )
+                        .await;
                 }
                 Err(e) => {
                     error!("Failed to confirm validity proof txn: {e:?}");
@@ -420,6 +444,9 @@ pub async fn publish_receipt_proofs<P: Provider>(
             )
             .await;
         if fault_proof_status != 0 {
+            // Decrement active provers count
+            decrement_active_provers().await;
+            // Report proof skip
             warn!("Skipping proof submission for already proven game at local index {proposal_index}.");
             meter_proofs_discarded.add(
                 1,
@@ -428,6 +455,16 @@ pub async fn publish_receipt_proofs<P: Provider>(
                     KeyValue::new("reason", "proven"),
                 ],
             );
+            // Release any held permits
+            agent
+                .release_fp_permit(
+                    parent,
+                    proposal,
+                    proof_journal.payout_recipient,
+                    validator_provider,
+                    args.sync.provider.timeouts.eth_rpc_timeout,
+                )
+                .await;
             continue;
         } else {
             info!("Fault proof status: {fault_proof_status}");
@@ -556,7 +593,7 @@ pub async fn publish_receipt_proofs<P: Provider>(
 
         // sanity check config hash
         {
-            let config_hash = parent_contract
+            let config_hash = parent_verifier
                 .ROLLUP_CONFIG_HASH()
                 .stall_with_context(
                     context.clone(),
@@ -571,6 +608,44 @@ pub async fn publish_receipt_proofs<P: Provider>(
                 );
             } else {
                 info!("Proof Config hash confirmed.");
+            }
+        }
+
+        // Check permit activation before submitting fault proof
+        let permits = agent.get_fp_permits(proposal.contract, proof_journal.payout_recipient);
+        if let Some(&(expiry, permit_index)) = permits.last() {
+            if permit_index > 0 {
+                let activation_time =
+                    expiry - agent.deployment.permit_duration + agent.deployment.permit_delay;
+                match validator_provider
+                    .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+                    .await
+                {
+                    Ok(Some(latest_block)) => {
+                        let l1_timestamp = latest_block.header.timestamp;
+                        if l1_timestamp < activation_time {
+                            info!(
+                                "Waiting {}s for permit activation before submitting output fault proof for proposal {proposal_index} (L1 time: {l1_timestamp}, activation: {activation_time}).",
+                                activation_time - l1_timestamp
+                            );
+                            computed_proof_buffer
+                                .push_back(Message::Proof(proposal_index, Some(receipt)));
+                            continue;
+                        }
+                    }
+                    Ok(None) => {
+                        error!("Failed to fetch latest block for permit activation check");
+                        computed_proof_buffer
+                            .push_back(Message::Proof(proposal_index, Some(receipt)));
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch latest block for permit activation check: {e:?}");
+                        computed_proof_buffer
+                            .push_back(Message::Proof(proposal_index, Some(receipt)));
+                        continue;
+                    }
+                }
             }
         }
 
@@ -603,6 +678,9 @@ pub async fn publish_receipt_proofs<P: Provider>(
 
         match transaction_dispatch {
             Ok(receipt) => {
+                // Decrement active provers count
+                decrement_active_provers().await;
+                // Report proof submission
                 info!("Output fault proof submitted: {receipt:?}");
                 let proof_status = parent_contract
                     .proofStatus(proposal.signature)
@@ -639,6 +717,17 @@ pub async fn publish_receipt_proofs<P: Provider>(
                         ),
                     ],
                 );
+
+                // Release any held permits
+                agent
+                    .release_fp_permit(
+                        parent,
+                        proposal,
+                        proof_journal.payout_recipient,
+                        validator_provider,
+                        args.sync.provider.timeouts.eth_rpc_timeout,
+                    )
+                    .await;
             }
             Err(e) => {
                 error!("Failed to confirm fault proof txn: {e:?}");

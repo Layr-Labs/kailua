@@ -13,18 +13,37 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
-import "./vendor/FlatOPImportV1.4.0.sol";
-import "./vendor/FlatR0ImportV2.0.2.sol";
-import "./KailuaLib.sol";
-import "./KailuaTournament.sol";
-import "./KailuaTreasury.sol";
+import {
+    IKailuaTreasury,
+    InvalidDuplicationCounter,
+    BlockNumberMismatch,
+    BlobHashMissing,
+    ProvenFaulty,
+    ProposalGapRemaining,
+    NotProven,
+    KailuaKZGLib
+} from "./KailuaLib.sol";
+import {KailuaTournament} from "./KailuaTournament.sol";
+import {KailuaTreasury} from "./KailuaTreasury.sol";
+import {KailuaVerifier} from "./KailuaVerifier.sol";
+import {IInitializable} from "@optimism/interfaces/dispute/IInitializable.sol";
+import {GameStatus} from "@optimism/interfaces/dispute/IDisputeGame.sol";
+import {IDisputeGameFactory, IDisputeGame} from "@optimism/interfaces/dispute/IDisputeGameFactory.sol";
+import {GameType, Timestamp, Duration, Hash} from "@optimism/src/dispute/lib/Types.sol";
+import {
+    BadExtraData,
+    GameNotInProgress,
+    InvalidParent,
+    OutOfOrderResolution,
+    ClockNotExpired
+} from "@optimism/src/dispute/lib/Errors.sol";
 
 contract KailuaGame is KailuaTournament {
     /// @notice Semantic version.
-    /// @custom:semver 0.1.0
-    string public constant version = "0.1.0";
+    /// @custom:semver 1.2.0
+    string public constant version = "1.2.0";
 
     // ------------------------------
     // Immutable configuration
@@ -47,9 +66,7 @@ contract KailuaGame is KailuaTournament {
     )
         KailuaTournament(
             IKailuaTreasury(address(_kailuaTreasury)),
-            _kailuaTreasury.RISC_ZERO_VERIFIER(),
-            _kailuaTreasury.FPVM_IMAGE_ID(),
-            _kailuaTreasury.ROLLUP_CONFIG_HASH(),
+            _kailuaTreasury.KAILUA_VERIFIER(),
             _kailuaTreasury.PROPOSAL_OUTPUT_COUNT(),
             _kailuaTreasury.OUTPUT_BLOCK_SPAN(),
             _kailuaTreasury.GAME_TYPE(),
@@ -65,7 +82,6 @@ contract KailuaGame is KailuaTournament {
     // IInitializable implementation
     // ------------------------------
 
-    /// @inheritdoc IInitializable
     function initialize() external payable override {
         super.initializeInternal();
 
@@ -137,14 +153,12 @@ contract KailuaGame is KailuaTournament {
     // IDisputeGame implementation
     // ------------------------------
 
-    /// @inheritdoc IDisputeGame
     function extraData() external pure returns (bytes memory extraData_) {
         // The extra data starts at the second word within the cwia calldata and
         // is 24 bytes long.
         extraData_ = _getArgBytes(0x54, 0x18);
     }
 
-    /// @inheritdoc IDisputeGame
     function resolve() external returns (GameStatus status_) {
         // INVARIANT: Resolution cannot occur unless the game is currently in progress.
         if (status != GameStatus.IN_PROGRESS) {
@@ -213,7 +227,7 @@ contract KailuaGame is KailuaTournament {
         uint256 outputFe,
         bytes calldata blobCommitment,
         bytes calldata kzgProof
-    ) external override returns (bool success) {
+    ) external view override returns (bool success) {
         uint256 blobIndex = KailuaKZGLib.blobIndex(outputNumber);
         uint32 blobPosition = KailuaKZGLib.fieldElementIndex(outputNumber);
         bytes32 proposalBlobHash = KailuaKZGLib.versionedKZGHash(blobCommitment);

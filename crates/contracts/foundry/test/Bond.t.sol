@@ -13,9 +13,16 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import "./KailuaTest.t.sol";
+import {NotFactoryOwner} from "../src/KailuaLib.sol";
+import {
+    IncorrectBondAmount,
+    GameNotResolved,
+    NoCreditToClaim,
+    BondTransferFailed
+} from "@optimism/src/dispute/lib/Errors.sol";
 
 contract BondTest is KailuaTest {
     KailuaTreasury treasury;
@@ -77,7 +84,7 @@ contract BondTest is KailuaTest {
     function test_setParticipationBond() public {
         // Fail to set collateral
         vm.prank(address(0xbeef));
-        vm.expectRevert("not owner");
+        vm.expectRevert(NotFactoryOwner.selector);
         treasury.setParticipationBond(123);
     }
 
@@ -100,8 +107,8 @@ contract BondTest is KailuaTest {
         );
         // Jump ahead
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
         // Fail to reclaim bond with pending proposal
         vm.expectRevert(GameNotResolved.selector);
@@ -160,8 +167,8 @@ contract BondTest is KailuaTest {
 
         // Jump ahead
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
 
         // Fail to reclaim bond with pending proposal
@@ -195,8 +202,8 @@ contract BondTest is KailuaTest {
 
         // Jump ahead
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
 
         vm.deal(address(0x01), 1000);
@@ -221,48 +228,5 @@ contract BondTest is KailuaTest {
         // Reclaim bond as duplicator
         vm.startPrank(address(0x01));
         treasury.claimProposerBond();
-    }
-
-    function test_claimEliminationBond() public {
-        // Claim nothing
-        for (uint256 i = 0; i < 32; i++) {
-            treasury.claimEliminationBonds(i);
-            vm.assertEq(treasury.eliminationsPaid(address(this)), 0);
-        }
-
-        vm.warp(
-            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
-        );
-        // Succeed to propose after min creation time
-        KailuaTournament proposal_128_0 = treasury.propose{value: 987}(
-            Claim.wrap(0x0001010000010100000010100000101000001010000010100000010100000101),
-            abi.encodePacked(uint64(128), uint64(anchor.gameIndex()), uint64(0))
-        );
-        vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
-        );
-        // Succeed to propose after min creation time
-        KailuaTournament proposal_256_0 = treasury.propose(
-            Claim.wrap(0x0001010000010100000010100000101000001010000010100000010100000101),
-            abi.encodePacked(uint64(256), uint64(proposal_128_0.gameIndex()), uint64(0))
-        );
-
-        // Succeed to eliminate from parent address
-        vm.startPrank(address(proposal_128_0));
-        treasury.eliminate(address(proposal_256_0), address(this));
-        vm.stopPrank();
-
-        // Succeed to claim own elimination bond
-        treasury.claimEliminationBonds(1);
-        vm.assertEq(lastReceived, 987);
-        vm.assertEq(totalReceived, 987);
-        vm.assertEq(treasury.paidBonds(address(this)), 0);
-        vm.assertEq(treasury.eliminationsPaid(address(this)), 1);
-
-        // Nothing else to claim
-        treasury.claimEliminationBonds(100);
-        vm.assertEq(totalReceived, 987);
-        vm.assertEq(treasury.eliminationsPaid(address(this)), 1);
     }
 }

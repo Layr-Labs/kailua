@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import "../src/vendor/FlatOPImportV1.4.0.sol";
-import "../src/vendor/FlatR0ImportV2.0.2.sol";
+import {IDisputeGame} from "@optimism/interfaces/dispute/IDisputeGame.sol";
+import {IDisputeGameFactory} from "@optimism/interfaces/dispute/IDisputeGameFactory.sol";
+import {IOptimismPortal2} from "@optimism/interfaces/L1/IOptimismPortal2.sol";
+import {IAnchorStateRegistry} from "@optimism/interfaces/dispute/IAnchorStateRegistry.sol";
+import {GameType, Claim, Duration} from "@optimism/src/dispute/lib/Types.sol";
+import {IRiscZeroVerifier} from "@risc0/IRiscZeroVerifier.sol";
+import {RiscZeroVerifierRouter} from "@risc0/RiscZeroVerifierRouter.sol";
+import {RiscZeroGroth16Verifier} from "@risc0/groth16/RiscZeroGroth16Verifier.sol";
+import {KailuaVerifier} from "../src/KailuaVerifier.sol";
 import {KailuaTreasury} from "../src/KailuaTreasury.sol";
 import {KailuaGame} from "../src/KailuaGame.sol";
 
@@ -21,6 +28,8 @@ contract DeployScript is Script {
     bytes32 controlId = vm.envBytes32("CONTROL_ID");
     IRiscZeroVerifier riscZeroVerifier = IRiscZeroVerifier(vm.envAddress("RISC_ZERO_VERIFIER"));
     bytes32 rollupConfigHash = vm.envBytes32("ROLLUP_CONFIG_HASH");
+    Duration permitDuration = Duration.wrap(uint64(vm.envUint("PERMIT_DURATION")));
+    Duration permitDelay = Duration.wrap(uint64(vm.envUint("PERMIT_DELAY")));
     uint64 proposalOutputCount = uint64(vm.envUint("PROPOSAL_OUTPUT_COUNT"));
     uint64 outputBlockSpan = uint64(vm.envUint("OUTPUT_BLOCK_SPAN"));
     GameType gameType = GameType.wrap(uint32(vm.envUint("KAILUA_GAME_TYPE")));
@@ -33,29 +42,29 @@ contract DeployScript is Script {
     uint256 participationBond = vm.envUint("PARTICIPATION_BOND");
     address vanguardAddress = vm.envAddress("VANGUARD_ADDRESS");
     Duration vanguardAdvantage = Duration.wrap(uint64(vm.envUint("VANGUARD_ADVANTAGE"))); // set
-    OptimismPortal2 optimismPortal = OptimismPortal2(payable(vm.envAddress("OPTIMISM_PORTAL")));
+    IOptimismPortal2 optimismPortal = IOptimismPortal2(vm.envAddress("OPTIMISM_PORTAL"));
 
     function run() public {
         vm.startBroadcast(deployerPrivateKey);
 
-        _6_1_proofVerification();
-        (KailuaTreasury treasury, KailuaGame game) = _6_2_disputeResolution();
+        KailuaVerifier verifier = _6_1_proofVerification();
+        (KailuaTreasury treasury, KailuaGame game) = _6_2_disputeResolution(verifier);
         _6_3_stateAnchoring(treasury);
         _6_4_sequencingProposal(treasury, game);
 
         vm.stopBroadcast();
     }
     
-    function _6_1_proofVerification() public {
+    function _6_1_proofVerification() public returns (KailuaVerifier) {
         RiscZeroVerifierRouter router = new RiscZeroVerifierRouter(deployer);
-
         RiscZeroGroth16Verifier groth16Verifier = new RiscZeroGroth16Verifier(controlRoot, controlId);
         bytes4 groth16Selector = groth16Verifier.SELECTOR();
         router.addVerifier(groth16Selector, groth16Verifier);
+        return new KailuaVerifier(riscZeroVerifier, fpvmImageId, rollupConfigHash, permitDuration, permitDelay);
     }
 
-    function _6_2_disputeResolution() public returns (KailuaTreasury, KailuaGame) {
-        KailuaTreasury treasury = new KailuaTreasury(riscZeroVerifier, fpvmImageId, rollupConfigHash, proposalOutputCount, outputBlockSpan, gameType, optimismPortal, outputRootClaim, l2BlockNumber);
+    function _6_2_disputeResolution(KailuaVerifier kailuaVerifier) public returns (KailuaTreasury, KailuaGame) {
+        KailuaTreasury treasury = new KailuaTreasury(kailuaVerifier,  proposalOutputCount, outputBlockSpan, gameType, optimismPortal, outputRootClaim, l2BlockNumber);
         KailuaGame game = new KailuaGame(treasury, genesisTimestamp, blocktime, maxClockDuration);
 
         return (treasury, game);
@@ -78,6 +87,6 @@ contract DeployScript is Script {
         dgf.setImplementation(gameType, game);
         // OPTIONAL
         treasury.assignVanguard(vanguardAddress, vanguardAdvantage);
-        optimismPortal.setRespectedGameType(gameType);
+        IAnchorStateRegistry(address(optimismPortal.anchorStateRegistry())).setRespectedGameType(gameType);
     }
 }

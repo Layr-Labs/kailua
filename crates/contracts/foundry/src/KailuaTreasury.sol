@@ -13,17 +13,38 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.15;
+pragma solidity 0.8.24;
 
-import "./vendor/FlatOPImportV1.4.0.sol";
-import "./vendor/FlatR0ImportV2.0.2.sol";
-import "./KailuaLib.sol";
-import "./KailuaTournament.sol";
+import {
+    IKailuaTreasury,
+    Blacklisted,
+    NotProposed,
+    AlreadyEliminated,
+    KailuaPayLib,
+    NotFactoryOwner,
+    BlockNumberMismatch,
+    VanguardError
+} from "./KailuaLib.sol";
+import {KailuaTournament} from "./KailuaTournament.sol";
+import {KailuaVerifier} from "./KailuaVerifier.sol";
+import {IInitializable} from "@optimism/interfaces/dispute/IInitializable.sol";
+import {GameStatus, IDisputeGame} from "@optimism/interfaces/dispute/IDisputeGame.sol";
+import {IOptimismPortal2} from "@optimism/interfaces/L1/IOptimismPortal2.sol";
+import {Claim, GameType, Timestamp, Duration} from "@optimism/src/dispute/lib/Types.sol";
+import {
+    BadExtraData,
+    GameNotInProgress,
+    UnexpectedRootClaim,
+    BadAuth,
+    IncorrectBondAmount,
+    NoCreditToClaim,
+    GameNotResolved
+} from "@optimism/src/dispute/lib/Errors.sol";
 
 contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
     /// @notice Semantic version.
-    /// @custom:semver 0.1.0
-    string public constant version = "0.1.0";
+    /// @custom:semver 1.2.0
+    string public constant version = "1.2.0";
 
     // ------------------------------
     // Immutable configuration
@@ -36,25 +57,16 @@ contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
     uint64 public immutable L2_BLOCK_NUMBER;
 
     constructor(
-        IRiscZeroVerifier _verifierContract,
-        bytes32 _imageId,
-        bytes32 _configHash,
+        KailuaVerifier _kailuaVerifier,
         uint64 _proposalOutputCount,
         uint64 _outputBlockSpan,
         GameType _gameType,
-        OptimismPortal2 _optimismPortal,
+        IOptimismPortal2 _optimismPortal,
         Claim _rootClaim,
         uint64 _l2BlockNumber
     )
         KailuaTournament(
-            KailuaTreasury(this),
-            _verifierContract,
-            _imageId,
-            _configHash,
-            _proposalOutputCount,
-            _outputBlockSpan,
-            _gameType,
-            _optimismPortal
+            KailuaTreasury(this), _kailuaVerifier, _proposalOutputCount, _outputBlockSpan, _gameType, _optimismPortal
         )
     {
         ROOT_CLAIM = _rootClaim;
@@ -65,7 +77,6 @@ contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
     // IInitializable implementation
     // ------------------------------
 
-    /// @inheritdoc IInitializable
     function initialize() external payable override {
         super.initializeInternal();
 
@@ -200,8 +211,19 @@ contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
         // Record elimination round
         eliminationRound[eliminated] = child.gameIndex();
 
-        // Allocate bond to prover
-        eliminations[prover].push(eliminated);
+        uint256 bond = paidBonds[eliminated];
+        paidBonds[eliminated] = 0;
+
+        // Split the slashed bond into prover / winner / burn.
+        uint256 proverShare = (bond * ELIMINATION_SPLIT_PROVER_NUM) / ELIMINATION_SPLIT_DENOM;
+        uint256 winnerShare = (bond * ELIMINATION_SPLIT_WINNER_NUM) / ELIMINATION_SPLIT_DENOM;
+        uint256 burnShare = bond - proverShare - winnerShare;
+
+        eliminationRewards[prover] += proverShare;
+        winnerSharesByParent[parent] += winnerShare;
+        // Burn by sending it to the zero address.
+        // The zero address has no code, so this external call cannot reenter.
+        KailuaPayLib.pay(burnShare, address(0));
     }
 
     /// @inheritdoc IKailuaTreasury
@@ -212,10 +234,16 @@ contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
 
     /// @inheritdoc IKailuaTreasury
     function updateLastResolved() external {
+        address proposer = proposerOf[msg.sender];
+
         // INVARIANT: Only known proposal contracts may call this function
-        if (proposerOf[msg.sender] == address(0x0)) {
+        if (proposer == address(0x0)) {
             revert NotProposed();
         }
+
+        KailuaTournament parent = KailuaTournament(msg.sender).parentGame();
+        eliminationRewards[proposer] += winnerSharesByParent[parent];
+        winnerSharesByParent[parent] = 0;
 
         lastResolved = msg.sender;
     }
@@ -224,17 +252,23 @@ contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
     // Treasury
     // ------------------------------
 
+    /// @notice Fixed split of a slashed participation bond between prover, winner, and burn.
+    uint256 public constant ELIMINATION_SPLIT_DENOM = 3;
+    uint256 public constant ELIMINATION_SPLIT_PROVER_NUM = 1;
+    uint256 public constant ELIMINATION_SPLIT_WINNER_NUM = 1;
+
     /// @notice The locked collateral required for proposal submission
     uint256 public participationBond;
 
     /// @notice The locked collateral still paid by proposers for participation
     mapping(address => uint256) public paidBonds;
 
-    /// @notice The list of players each prover has eliminated
-    mapping(address => address[]) public eliminations;
+    /// @notice The total share of elimination bonds accumulated for the eventual tournament winner.
+    /// @dev Keyed by the parent game (tournament) contract.
+    mapping(KailuaTournament => uint256) private winnerSharesByParent;
 
-    /// @notice The number of eliminations paid out to each prover
-    mapping(address => uint256) public eliminationsPaid;
+    /// @notice The unpaid rewards from eliminated invalid proposals
+    mapping(address => uint256) public eliminationRewards;
 
     /// @notice The last proposal made by each proposer
     mapping(address => KailuaTournament) public lastProposal;
@@ -256,31 +290,17 @@ contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
     }
 
     modifier onlyFactoryOwner() {
-        OwnableUpgradeable factoryContract = OwnableUpgradeable(address(DISPUTE_GAME_FACTORY));
-        require(msg.sender == factoryContract.owner(), "not owner");
+        if (msg.sender != DISPUTE_GAME_FACTORY.owner()) revert NotFactoryOwner();
         _;
     }
 
-    /// @notice Pays out the prover for the eliminations it has accrued
-    function claimEliminationBonds(uint256 claims) public nonReentrant {
-        uint256 claimed = 0;
-        uint256 payout = 0;
-        for (
-            uint256 i = eliminationsPaid[msg.sender];
-            claimed < claims && i < eliminations[msg.sender].length;
-            (i++, claimed++)
-        ) {
-            address eliminated = eliminations[msg.sender][i];
-            payout += paidBonds[eliminated];
-            paidBonds[eliminated] = 0;
-        }
-        // Increase number of bonds claimed
-        if (claimed > 0) {
-            eliminationsPaid[msg.sender] += claimed;
-        }
-        // Transfer payout
+    /// @notice Pays the elimination rewards the sender has accrued
+    function claimEliminationRewards() public nonReentrant {
+        uint256 payout = eliminationRewards[msg.sender];
+        eliminationRewards[msg.sender] = 0;
+
         if (payout > 0) {
-            pay(payout, msg.sender);
+            KailuaPayLib.pay(payout, msg.sender);
         }
     }
 
@@ -308,13 +328,7 @@ contract KailuaTreasury is KailuaTournament, IKailuaTreasury {
 
         // Pay out and clear bond
         paidBonds[msg.sender] = 0;
-        pay(payout, msg.sender);
-    }
-
-    /// @notice Transfers ETH from the contract's balance to the recipient
-    function pay(uint256 amount, address recipient) internal {
-        (bool success,) = recipient.call{value: amount}(hex"");
-        if (!success) revert BondTransferFailed();
+        KailuaPayLib.pay(payout, msg.sender);
     }
 
     /// @notice Updates the required bond for new proposals

@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import "./KailuaTest.t.sol";
 
@@ -56,6 +56,7 @@ contract CostsTest is KailuaTest {
     }
 
     function test_propose_cost() public {
+        verifier = new KailuaVerifier(zkvm, bytes32(0x0), bytes32(0x0), Duration.wrap(2), Duration.wrap(1));
         for (uint256 i = 0; i <= 6; i++) {
             test_propose_n(i);
         }

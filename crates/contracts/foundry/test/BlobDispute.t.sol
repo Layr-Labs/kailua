@@ -13,9 +13,11 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import "./KailuaTest.t.sol";
+import {InvalidDataRemainder} from "../src/KailuaTournament.sol";
+import {InvalidDisputedClaimIndex, GameNotInProgress} from "@optimism/src/dispute/lib/Errors.sol";
 
 contract BlobDisputeTest is KailuaTest {
     KailuaTreasury treasury;
@@ -156,8 +158,8 @@ contract BlobDisputeTest is KailuaTest {
         );
 
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
 
         // Resolve
@@ -413,8 +415,8 @@ contract BlobDisputeTest is KailuaTest {
         );
 
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
         vm.assertEq(treasury.lastResolved(), address(anchor));
         proposal_128_0.resolve();

@@ -32,7 +32,7 @@ use kailua_sync::transact::signer::{
     ValidatorSignerArgs,
 };
 use kailua_sync::transact::TransactArgs;
-use kailua_validator::args::ValidateArgs;
+use kailua_validator::args::{PermitPolicy, ValidateArgs};
 use kailua_validator::validate::validate;
 use lazy_static::lazy_static;
 use reqwest::Client;
@@ -353,6 +353,8 @@ async fn deploy_kailua_contracts(
         collateral_amount: 1,
         verifier_contract: None,
         challenge_timeout,
+        proof_permit_timeout: 900,
+        proof_permit_delay: 12,
         deployer_signer: DeployerSignerArgs::from(devnet.private_key(DEPLOYER_ALIAS)?),
         owner_signer: OwnerSignerArgs::from(devnet.private_key(OWNER_ALIAS)?),
         guardian_signer: Some(GuardianSignerArgs::from(
@@ -540,6 +542,8 @@ async fn proposer_validator() {
             enable_experimental_witness_endpoint: true,
             max_fault_proving_delay: 0,
             max_validity_proving_delay: 0,
+            fault_proving_permit: PermitPolicy::MANDATORY,
+            fault_proving_permit_expiry: 600,
             min_validity_proving_timestamp: 0,
             l1_head_jump_back: 0,
             validator_signer: ValidatorSignerArgs::from(
@@ -606,6 +610,8 @@ async fn proposer_validator() {
             enable_experimental_witness_endpoint: true,
             max_fault_proving_delay: 0,
             max_validity_proving_delay: 0,
+            fault_proving_permit: PermitPolicy::MANDATORY,
+            fault_proving_permit_expiry: 600,
             min_validity_proving_timestamp: 0,
             l1_head_jump_back: 0,
             validator_signer: ValidatorSignerArgs::from(
@@ -677,7 +683,7 @@ async fn prover() {
     let data_dir = tmp_dir.path().join("agent").to_path_buf();
     let provider = devnet.provider_args().unwrap();
     let sync = SyncArgs {
-        provider: provider,
+        provider,
         kailua_game_implementation: None,
         kailua_anchor_address: None,
         final_l2_block: Some(60),

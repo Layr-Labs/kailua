@@ -13,9 +13,33 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import "./KailuaTest.t.sol";
+
+import {
+    IKailuaTournament,
+    AlreadyEliminated,
+    ProvenFaulty,
+    NotFactoryOwner,
+    UnknownGame,
+    NotProposed,
+    Blacklisted,
+    BlockNumberMismatch
+} from "../src/KailuaLib.sol";
+import {
+    NoCreditToClaim,
+    IncorrectBondAmount,
+    ClockNotExpired,
+    ClaimAlreadyResolved,
+    InvalidParent,
+    AlreadyInitialized,
+    UnexpectedRootClaim,
+    BadExtraData,
+    GameNotInProgress,
+    OutOfOrderResolution,
+    GameNotResolved
+} from "@optimism/src/dispute/lib/Errors.sol";
 
 contract ProposeTest is KailuaTest {
     KailuaTreasury treasury;
@@ -43,8 +67,8 @@ contract ProposeTest is KailuaTest {
     function test_participationBond() public {
         treasury.setParticipationBond(123);
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 1
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 1
         );
         // Fail without deposit
         uint64 anchorIndex = uint64(anchor.gameIndex());
@@ -60,8 +84,8 @@ contract ProposeTest is KailuaTest {
         );
 
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
         // Success without more collateral
         KailuaTournament game_1 = treasury.propose(
@@ -82,7 +106,7 @@ contract ProposeTest is KailuaTest {
     function test_vanguard() public {
         // Fail assignment
         vm.prank(address(0xbeef));
-        vm.expectRevert("not owner");
+        vm.expectRevert(NotFactoryOwner.selector);
         treasury.assignVanguard(address(0x007), Duration.wrap(0xFFFFFFFFFFFFFFFF));
         vm.assertEq(treasury.vanguard(), address(0x0));
 
@@ -91,8 +115,8 @@ contract ProposeTest is KailuaTest {
         vm.assertEq(treasury.vanguard(), address(0x007));
 
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 1
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 1
         );
         // Fail if not vanguard
         uint64 anchorIndex = uint64(anchor.gameIndex());
@@ -123,8 +147,8 @@ contract ProposeTest is KailuaTest {
 
     function test_duplication() public {
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 1
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 1
         );
         // Succeed on fresh proposal
         uint64 anchorIndex = uint64(anchor.gameIndex());
@@ -162,8 +186,8 @@ contract ProposeTest is KailuaTest {
 
     function test_appendChild() public {
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
         // Succeed on fresh proposal
         uint64 anchorIndex = uint64(anchor.gameIndex());
@@ -191,8 +215,8 @@ contract ProposeTest is KailuaTest {
 
     function test_proposerOf() public {
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
 
         // Succeed on first proposal from 0x0000..
@@ -224,8 +248,8 @@ contract ProposeTest is KailuaTest {
 
     function test_selfParent() public {
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
 
         // Fail to extend self as parent
@@ -263,8 +287,8 @@ contract ProposeTest is KailuaTest {
 
     function test_lastProposal() public {
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 2
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 2
         );
         // Fail on low successor height
         uint64 anchorIndex = uint64(anchor.gameIndex());
@@ -308,8 +332,8 @@ contract ProposeTest is KailuaTest {
         );
 
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 3
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 3
         );
         // Succeed on successor proposal
         // [128, 256, 384]
@@ -320,8 +344,8 @@ contract ProposeTest is KailuaTest {
         );
 
         vm.warp(
-            game.GENESIS_TIME_STAMP()
-                + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME() * 4
+            game.GENESIS_TIME_STAMP() + game.PROPOSAL_OUTPUT_COUNT() * game.OUTPUT_BLOCK_SPAN() * game.L2_BLOCK_TIME()
+                * 4
         );
         // Succeed on child proposal for new proposer
         // [128, 256, 384]
@@ -387,12 +411,10 @@ contract ProposeTest is KailuaTest {
         // Kailua
         KailuaTreasury new_treasury = new KailuaTreasury(
             verifier,
-            bytes32(0x0),
-            bytes32(0x0),
             treasury.PROPOSAL_OUTPUT_COUNT(),
             treasury.OUTPUT_BLOCK_SPAN(),
             GameType.wrap(1337),
-            OptimismPortal2(payable(address(portal))),
+            IOptimismPortal2(payable(address(portal))),
             Claim.wrap(rootClaim),
             uint64(treasury.l2BlockNumber())
         );
@@ -419,7 +441,7 @@ contract ProposeTest is KailuaTest {
     function test_KailuaTreasury_resolve() public {
         // Fail to resolve anonymously
         vm.startPrank(address(0xdeadbeef));
-        vm.expectRevert("not owner");
+        vm.expectRevert(NotFactoryOwner.selector);
         treasury.resolve();
         vm.stopPrank();
         // Fail to resolve again
