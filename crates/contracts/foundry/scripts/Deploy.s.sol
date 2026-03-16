@@ -3,14 +3,14 @@ pragma solidity 0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {IDisputeGame} from "@optimism/interfaces/dispute/IDisputeGame.sol";
-import {IDisputeGameFactory} from "@optimism/interfaces/dispute/IDisputeGameFactory.sol";
+import {IDisputeGame, IDisputeGameFactory} from "@optimism/interfaces/dispute/IDisputeGameFactory.sol";
 import {IOptimismPortal2} from "@optimism/interfaces/L1/IOptimismPortal2.sol";
 import {IAnchorStateRegistry} from "@optimism/interfaces/dispute/IAnchorStateRegistry.sol";
 import {GameType, Claim, Duration} from "@optimism/src/dispute/lib/Types.sol";
 import {IRiscZeroVerifier} from "@risc0/IRiscZeroVerifier.sol";
 import {RiscZeroVerifierRouter} from "@risc0/RiscZeroVerifierRouter.sol";
 import {RiscZeroGroth16Verifier} from "@risc0/groth16/RiscZeroGroth16Verifier.sol";
+import {Proxy} from "../src/Proxy.sol";
 import {KailuaVerifier} from "../src/KailuaVerifier.sol";
 import {KailuaTreasury} from "../src/KailuaTreasury.sol";
 import {KailuaGame} from "../src/KailuaGame.sol";
@@ -26,7 +26,7 @@ contract DeployScript is Script {
     bytes32 fpvmImageId = vm.envBytes32("FPVM_IMAGE_ID");
     bytes32 controlRoot = vm.envBytes32("CONTROL_ROOT");
     bytes32 controlId = vm.envBytes32("CONTROL_ID");
-    IRiscZeroVerifier riscZeroVerifier = IRiscZeroVerifier(vm.envAddress("RISC_ZERO_VERIFIER"));
+    address riscZeroVerifierAddr = vm.envOr("RISC_ZERO_VERIFIER", address(0));
     bytes32 rollupConfigHash = vm.envBytes32("ROLLUP_CONFIG_HASH");
     Duration permitDuration = Duration.wrap(uint64(vm.envUint("PERMIT_DURATION")));
     Duration permitDelay = Duration.wrap(uint64(vm.envUint("PERMIT_DELAY")));
@@ -42,7 +42,7 @@ contract DeployScript is Script {
     uint256 participationBond = vm.envUint("PARTICIPATION_BOND");
     address vanguardAddress = vm.envAddress("VANGUARD_ADDRESS");
     Duration vanguardAdvantage = Duration.wrap(uint64(vm.envUint("VANGUARD_ADVANTAGE"))); // set
-    IOptimismPortal2 optimismPortal = IOptimismPortal2(vm.envAddress("OPTIMISM_PORTAL"));
+    IOptimismPortal2 optimismPortal = IOptimismPortal2(payable(vm.envAddress("OPTIMISM_PORTAL")));
 
     function run() public {
         vm.startBroadcast(deployerPrivateKey);
@@ -56,11 +56,27 @@ contract DeployScript is Script {
     }
     
     function _6_1_proofVerification() public returns (KailuaVerifier) {
-        RiscZeroVerifierRouter router = new RiscZeroVerifierRouter(deployer);
-        RiscZeroGroth16Verifier groth16Verifier = new RiscZeroGroth16Verifier(controlRoot, controlId);
-        bytes4 groth16Selector = groth16Verifier.SELECTOR();
-        router.addVerifier(groth16Selector, groth16Verifier);
-        return new KailuaVerifier(riscZeroVerifier, fpvmImageId, rollupConfigHash, permitDuration, permitDelay);
+        // Deploy router and groth16 verifier only when RISC_ZERO_VERIFIER is not provided
+        if (riscZeroVerifierAddr == address(0)) {
+            RiscZeroVerifierRouter router = new RiscZeroVerifierRouter(deployer);
+            RiscZeroGroth16Verifier groth16Verifier = new RiscZeroGroth16Verifier(controlRoot, controlId);
+            bytes4 groth16Selector = groth16Verifier.SELECTOR();
+            router.addVerifier(groth16Selector, groth16Verifier);
+            riscZeroVerifierAddr = address(router);
+        }
+
+        // Deploy KailuaVerifier implementation
+        KailuaVerifier verifierImpl = new KailuaVerifier(
+            IRiscZeroVerifier(riscZeroVerifierAddr), fpvmImageId, rollupConfigHash, permitDuration, permitDelay
+        );
+
+        // Deploy proxy with deployer as initial admin, set implementation, then transfer admin
+        Proxy proxy = new Proxy(deployer);
+        proxy.upgradeTo(address(verifierImpl));
+        address proxyAdmin = vm.envOr("PROXY_ADMIN", dgf.owner());
+        proxy.changeAdmin(proxyAdmin);
+
+        return KailuaVerifier(address(proxy));
     }
 
     function _6_2_disputeResolution(KailuaVerifier kailuaVerifier) public returns (KailuaTreasury, KailuaGame) {
@@ -75,7 +91,7 @@ contract DeployScript is Script {
         if (initialBond != 0) {
             dgf.setInitBond(gameType, 0);
         }
-        dgf.setImplementation(gameType, treasury);
+        dgf.setImplementation(gameType, IDisputeGame(address(treasury)));
         treasury.propose(outputRootClaim, abi.encodePacked(l2BlockNumber, treasury));
         // Call the games function on the dispute game factory to get the created game
         (IDisputeGame gameAddress,) = dgf.games(gameType, outputRootClaim, abi.encodePacked(l2BlockNumber, treasury));
@@ -84,7 +100,7 @@ contract DeployScript is Script {
 
     function _6_4_sequencingProposal(KailuaTreasury treasury, KailuaGame game) public {
         treasury.setParticipationBond(participationBond);
-        dgf.setImplementation(gameType, game);
+        dgf.setImplementation(gameType, IDisputeGame(address(game)));
         // OPTIONAL
         treasury.assignVanguard(vanguardAddress, vanguardAdvantage);
         IAnchorStateRegistry(address(optimismPortal.anchorStateRegistry())).setRespectedGameType(gameType);
