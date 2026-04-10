@@ -193,7 +193,7 @@ pub struct MarketProviderConfig {
 
     /// Use legacy static wei-based pricing instead of dynamic SDK pricing.
     /// When enabled, the flags below are used instead of the SDK's OfferLayer.
-    #[clap(long, env, required = false, default_value_t = false)]
+    #[clap(long, env, required = false, default_value_t = true)]
     pub boundless_legacy_pricing: bool,
     /// Starting price (wei) per cycle.
     #[clap(
@@ -1525,7 +1525,7 @@ impl R2Storage {
 
     async fn upload_input(&self, input: &[u8]) -> anyhow::Result<Url> {
         let digest = Sha256::digest(input);
-        let key = format!("v2/kailua/input/{}.bin", hex::encode(digest.as_slice()));
+        let key = format!("v2/kailua/input/{}.bin", hex::encode(digest));
         self.upload(&key, input.to_vec()).await
     }
 }
